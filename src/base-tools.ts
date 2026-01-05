@@ -172,9 +172,10 @@ export function registerBaseTools(server: ServerBase, kibanaClient: KibanaClient
       path: z.string(),
       body: z.any().optional(),
       params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+      headers: z.record(z.string()).optional(),
       space: z.string().optional().describe("Target Kibana space (optional, defaults to configured space)")
     }),
-    async ({ method, path, body, params, space }): Promise<ToolResponse> => {
+    async ({ method, path, body, params, headers, space }): Promise<ToolResponse> => {
       try {
         const targetSpace = space || defaultSpace;
         let url = path;
@@ -186,21 +187,36 @@ export function registerBaseTools(server: ServerBase, kibanaClient: KibanaClient
         }
 
         let response;
-        switch (method.toLowerCase()) {
-          case 'get':
-            response = await kibanaClient.get(url, { space });
-            break;
-          case 'post':
-            response = await kibanaClient.post(url, body, { space });
-            break;
-          case 'put':
-            response = await kibanaClient.put(url, body, { space });
-            break;
-          case 'delete':
-            response = await kibanaClient.delete(url, { space });
-            break;
-          default:
-            throw new Error(`Unsupported HTTP method: ${method}`);
+
+        // Prepare headers object (merge caller headers)
+        const requestHeaders = { ...(headers || {}) };
+
+        // If proxying through Console, Kibana expects POST to /api/console/proxy and kbn-xsrf header.
+        const isConsoleProxy = url.startsWith('/api/console/proxy') || path.startsWith('/api/console/proxy');
+        if (isConsoleProxy) {
+          requestHeaders['kbn-xsrf'] = requestHeaders['kbn-xsrf'] || 'true';
+          // Determine proxied method (from params if provided)
+          const proxiedMethod = params && (params as any).method ? String((params as any).method).toUpperCase() : undefined;
+          // Do not send a request body for proxied GETs. Use undefined (not null) so axios does not send an empty body.
+          const sendBody = proxiedMethod && proxiedMethod !== 'GET' ? body : undefined;
+          response = await kibanaClient.post(url, sendBody, { space, headers: requestHeaders });
+        } else {
+          switch (method.toLowerCase()) {
+            case 'get':
+              response = await kibanaClient.get(url, { space, headers: requestHeaders });
+              break;
+            case 'post':
+              response = await kibanaClient.post(url, body, { space, headers: requestHeaders });
+              break;
+            case 'put':
+              response = await kibanaClient.put(url, body, { space, headers: requestHeaders });
+              break;
+            case 'delete':
+              response = await kibanaClient.delete(url, { space, headers: requestHeaders });
+              break;
+            default:
+              throw new Error(`Unsupported HTTP method: ${method}`);
+          }
         }
 
         return {
